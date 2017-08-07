@@ -1,0 +1,120 @@
+# Criação de Função para separação dos Logs
+
+import re
+import datetime
+
+from pyspark.sql import Row
+
+meses = {'Jan': 1, 'Feb': 2, 'Mar':3, 'Apr':4, 'May':5, 'Jun':6, 'Jul':7,
+    'Aug':8,  'Sep': 9, 'Oct':10, 'Nov': 11, 'Dec': 12}
+
+
+def dataehora(s):
+     return datetime.datetime(int(s[7:11]),
+                             meses[s[3:6]],
+                             int(s[0:2]),
+                             int(s[12:14]),
+                             int(s[15:17]),
+                             int(s[18:20]))
+
+
+def LogsApache(logs):
+    valores = re.search(padraoApache, logs)
+    if valores is None:
+        return (logs, 0)
+    campo = valores.group(9)
+    if campo == '-':
+        size = long(0)
+    else:
+        size = long(valores.group(9))
+    return (Row(
+        host          = valores.group(1),
+        client_id     = valores.group(2),
+        user_id       = valores.group(3),
+        date_time     = dataehora(valores.group(4)),
+        method        = valores.group(5),
+        endpoint      = valores.group(6),
+        protocolo     = valores.group(7),
+        response_code = int(valores.group(8)),
+        content_size  = size
+    ), 1)
+
+
+# Expressão para separar os campos dos logs
+padraoApache = '^(\S+) (\S+) (\S+) \[([\w:/]+\s[+\-]\d{4})\] "(\S+) (\S+)\s*(\S*)" (\d{3}) (\S+)'
+
+
+# Criação de RDD
+
+import sys
+import os
+
+def criaRdd():
+    log = (sc.textFile("/FileStore/tables/nudjwv221501975860023/*.gz").map(LogsApache).cache())
+    
+    logs_acesso = (log.filter(lambda s: s[1] == 1).map(lambda s: s[0]).cache())
+
+    logs_falha = (log.filter(lambda s: s[1] == 0).map(lambda s: s[0]))
+    return log, logs_acesso, logs_falha
+
+log, logs_acesso, logs_falha = criaRdd()
+
+
+
+# Hosts Únicos 
+# [Resposta] 137951
+
+hosts = logs_acesso.map(lambda log: log.host)
+
+hostsUnicos= hosts.distinct()
+
+contagemHosts = hostsUnicos.count()
+print 'Hosts Únicos: %d' % contagemHosts
+
+
+
+# Total de Erros 404 
+# [Resposta] 20803
+
+erros = (logs_acesso.filter(lambda log: log.response_code==404).cache())
+print 'Total de %d URLs 404' % erros.count()
+
+
+# 5 URLS que mais causaram erros 404
+# [Resposta] Top 5 URLs com erros 404: [(u'/pub/winvn/readme.txt', 2004), (u'/pub/winvn/release.txt', 1732), 
+# (u'/shuttle/missions/STS-69/mission-STS-69.html', 683), 
+# (u'/shuttle/missions/sts-68/ksc-upclose.gif', 428), (u'/history/apollo/a-001/a-001-patch-small.gif', 384)]
+ 
+
+topUrls = erros.map(lambda log: (log.endpoint,1))
+
+SomaTopUrls = topUrls.reduceByKey(lambda a,b:a+b)
+
+top5Urls = SomaTopUrls.takeOrdered(5,lambda s: -s[1])
+print 'Top 5 URLs com erros 404: %s' % top5Urls
+
+
+
+# Quantidade de Erros 404 por dia
+# [Resposta] Erros 404 por dia: [(1, 558), (2, 289), (3, 777), (4, 703), (5, 729), (6, 1008), (7, 1098), (8, 680), (9, 627), (10, 709), (11, 733), (12, 657), (13, 741), (14, 699), (15, 579), (16, 515), (17, 673), (18, 718), (19, 846), (20, 740)]
+
+errosDia = erros.map(lambda log:(log.date_time.day,1))
+
+SomaErros = errosDia.reduceByKey(lambda a,b: a+b)
+
+ordemErros = (SomaErros.sortByKey().cache())
+
+errosDiarios = ordemErros.take(20)
+print 'Erros 404 por dia: %s' % errosDiarios
+
+
+
+# Total de Bytes Retornados  
+# [Resposta] 65519970468
+
+totalBytes = logs_acesso.map(lambda log: log.content_size).cache()
+SomaTotal= totalBytes.reduce(lambda a, b : a + b)
+print 'Total de Bytes Retornados:Max: %s' % SomaTotal
+    
+
+
